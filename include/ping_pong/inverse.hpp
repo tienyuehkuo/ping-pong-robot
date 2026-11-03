@@ -58,10 +58,12 @@ inline InverseResult evaluate(Vec3 start, const State& target, Vec3 a,
     const long double sp = o.position_scale, sv = o.velocity_scale;
     const long double wp = 1 / (sp * sp), wv = 1 / (sv * sv);
     const auto component = [&](double p0, double p1, double v1, double acc) {
-        return static_cast<double>(
-            (wp * T * (static_cast<long double>(p1) - p0 - 0.5L * acc * T * T)
-             + wv * (static_cast<long double>(v1) - acc * T))
-            / (wp * T * T + wv));
+        const long double displacement = static_cast<long double>(p1) - p0;
+        const long double position_term = displacement - 0.5L * acc * T * T;
+        const long double velocity_term = static_cast<long double>(v1) - acc * T;
+        const long double numerator = wp * T * position_term + wv * velocity_term;
+        const long double denominator = wp * T * T + wv;
+        return static_cast<double>(numerator / denominator);
     };
     Vec3 v{component(start.x, target.position.x, target.velocity.x, a.x),
            component(start.y, target.position.y, target.velocity.y, a.y),
