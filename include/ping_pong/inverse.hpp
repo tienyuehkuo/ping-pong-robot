@@ -52,40 +52,61 @@ inline void validate(Vec3 start, const State& target, Vec3 acceleration,
 // For fixed T the objective is an isotropic quadratic in launch velocity.
 // Its constrained optimum is its unconstrained optimum projected onto the
 // speed ball. Long-double intermediates reduce avoidable scaling overflow.
-inline InverseResult evaluate(Vec3 start, const State& target, Vec3 a,
-                               const InverseOptions& o, double t) {
-    const long double T = t;
-    const long double sp = o.position_scale, sv = o.velocity_scale;
-    const long double wp = 1 / (sp * sp), wv = 1 / (sv * sv);
-    const auto component = [&](double p0, double p1, double v1, double acc) {
-        const long double displacement = static_cast<long double>(p1) - p0;
-        const long double position_term = displacement - 0.5L * acc * T * T;
-        const long double velocity_term = static_cast<long double>(v1) - acc * T;
-        const long double numerator = wp * T * position_term + wv * velocity_term;
-        const long double denominator = wp * T * T + wv;
+inline InverseResult evaluate(Vec3 start, const State& target, Vec3 acceleration,
+                              const InverseOptions& options, double flight_time) {
+    const long double precise_flight_time = flight_time;
+    const long double position_scale = options.position_scale;
+    const long double velocity_scale = options.velocity_scale;
+    // Inverse squared scales weight the position and velocity errors in the cost.
+    const long double position_weight = 1 / (position_scale * position_scale);
+    const long double velocity_weight = 1 / (velocity_scale * velocity_scale);
+    // Solve one axis of the unconstrained fixed-time launch velocity.
+    // The 3D speed limit is applied after all three axes are combined.
+    const auto optimal_launch_velocity_for_axis = [&](
+        double start_position, double target_position,
+        double target_velocity, double axis_acceleration) {
+        const long double displacement = static_cast<long double>(target_position) - start_position;
+        const long double position_term = displacement
+            - 0.5L * axis_acceleration * precise_flight_time * precise_flight_time;
+        const long double velocity_term = static_cast<long double>(target_velocity)
+            - axis_acceleration * precise_flight_time;
+        const long double numerator = position_weight * precise_flight_time * position_term
+            + velocity_weight * velocity_term;
+        const long double denominator = position_weight * precise_flight_time * precise_flight_time
+            + velocity_weight;
         return static_cast<double>(numerator / denominator);
     };
-    Vec3 v{component(start.x, target.position.x, target.velocity.x, a.x),
-           component(start.y, target.position.y, target.velocity.y, a.y),
-           component(start.z, target.position.z, target.velocity.z, a.z)};
-    const double speed = norm(v);
-    if (!is_finite(v) || !std::isfinite(speed)) {
+    Vec3 launch_velocity{
+        optimal_launch_velocity_for_axis(
+            start.x, target.position.x, target.velocity.x, acceleration.x),
+        optimal_launch_velocity_for_axis(
+            start.y, target.position.y, target.velocity.y, acceleration.y),
+        optimal_launch_velocity_for_axis(
+            start.z, target.position.z, target.velocity.z, acceleration.z)};
+    const double speed = norm(launch_velocity);
+    if (!is_finite(launch_velocity) || !std::isfinite(speed)) {
         throw std::overflow_error("inverse velocity exceeds numeric range");
     }
-    if (speed > o.max_launch_speed) {
-        const double factor = o.max_launch_speed / speed;
-        v = {v.x * factor, v.y * factor, v.z * factor};
+    if (speed > options.max_launch_speed) {
+        const double factor = options.max_launch_speed / speed;
+        launch_velocity = {launch_velocity.x * factor, launch_velocity.y * factor,
+                           launch_velocity.z * factor};
     }
-    const State arrival = advance({start, v}, a, std::chrono::duration<double>{t});
-    const Vec3 pe = subtract(arrival.position, target.position);
-    const Vec3 ve = subtract(arrival.velocity, target.velocity);
-    const double pn = norm(pe), vn = norm(ve);
-    const double p = pn / o.position_scale, u = vn / o.velocity_scale;
-    const double cost = p * p + u * u;
+    const State arrival = advance(
+        {start, launch_velocity}, acceleration, std::chrono::duration<double>{flight_time});
+    const Vec3 position_error = subtract(arrival.position, target.position);
+    const Vec3 velocity_error = subtract(arrival.velocity, target.velocity);
+    const double position_error_norm = norm(position_error);
+    const double velocity_error_norm = norm(velocity_error);
+    const double normalized_position_error = position_error_norm / options.position_scale;
+    const double normalized_velocity_error = velocity_error_norm / options.velocity_scale;
+    const double cost = normalized_position_error * normalized_position_error
+        + normalized_velocity_error * normalized_velocity_error;
     if (!std::isfinite(cost)) {
         throw std::overflow_error("inverse cost exceeds numeric range");
     }
-    return {v, t, arrival, pe, ve, pn, vn, cost};
+    return {launch_velocity, flight_time, arrival, position_error, velocity_error,
+            position_error_norm, velocity_error_norm, cost};
 }
 } // namespace inverse_detail
 
